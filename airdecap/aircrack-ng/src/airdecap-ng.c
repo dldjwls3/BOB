@@ -42,13 +42,31 @@
 
 #include "version.h"
 #include "crypto.h"
-#include "pcap.h"
+#include <pcap.h>
 #include "osdep/byteorder.h"
 #include "common.h"
 
 #define CRYPT_NONE 0
 #define CRYPT_WEP  1
 #define CRYPT_WPA  2
+
+#define LINKTYPE_IEEE802_11     105
+#define LINKTYPE_PRISM_HEADER   119
+#define LINKTYPE_RADIOTAP_HDR   127
+#define LINKTYPE_PPI_HDR		192
+
+#define TCPDUMP_CIGAM           0xD4C3B2A1
+
+/* for pcap_open parameter */
+#define BUFSIZE 1000
+#define promisc 1
+#define timeout_ms 1000
+
+char src_dev[] = "wlp2s0";
+char dest_dev[] = "TEST";
+char bad_dev[] = "BAD";
+char errbuf[1000];
+
 
 extern char * getVersion(char * progname, int maj, int min, int submin, int svnrev, int beta, int rc);
 extern int check_crc_buf( unsigned char *buf, int len );
@@ -112,7 +130,7 @@ unsigned char buffer2[65536];
 
 /* this routine handles to 802.11 to Ethernet translation */
 
-int write_packet( FILE *f_out, struct pcap_pkthdr *pkh, unsigned char *h80211 )
+int write_packet( pcap_t *handle_out, struct pcap_pkthdr *pkh, unsigned char *h80211 )
 {
     int n;
     unsigned char arphdr[12];
@@ -183,6 +201,18 @@ int write_packet( FILE *f_out, struct pcap_pkthdr *pkh, unsigned char *h80211 )
         pkh->caplen += 12;
     }
 
+    
+    /* i don't know how to send packet with header */
+    n = pkh->caplen;
+    if(pcap_sendpacket(handle_out, buffer, n) != 0) {
+		fprintf(stderr, "pcap_sendpacket error\n");
+		return 2;
+    }
+    else {
+		printf("send packet\n");
+    }
+
+    /*
     n = sizeof( struct pcap_pkthdr );
 
     if( fwrite( pkh, 1, n, f_out ) != (size_t) n )
@@ -198,6 +228,7 @@ int write_packet( FILE *f_out, struct pcap_pkthdr *pkh, unsigned char *h80211 )
         perror( "fwrite(packet data) failed" );
         return( 1 );
     }
+    */
 
     return( 0 );
 }
@@ -220,6 +251,7 @@ int main( int argc, char *argv[] )
     struct pcap_file_header pfh;
     struct pcap_pkthdr pkh;
 
+    pcap_t *handle_in, *handle_out; 
     #ifdef USE_GCRYPT
         // Disable secure memory.
         gcry_control (GCRYCTL_DISABLE_SECMEM, 0);
@@ -243,11 +275,13 @@ int main( int argc, char *argv[] )
             {0,         0, 0,  0 }
         };
 
+	printf("start\n");
         int option = getopt_long( argc, argv, "lb:k:e:o:p:w:c:H",
                         long_options, &option_index );
 
         if( option < 0 ) break;
 
+	printf("option: %c\n", option);
         switch( option )
         {
         	case ':' :
@@ -500,7 +534,27 @@ usage:
     }
 
     /* open the input and output pcap files */
+    handle_in = pcap_open_live(src_dev, BUFSIZE, promisc, timeout_ms, errbuf);
+    if(handle_in == NULL) {
+		fprintf(stderr, "pcap_open_live error\n");
+		return 2;
+    }
+    else {
+		printf("src_dev open\n");
+    }
 
+    linktype = pcap_datalink(handle_in);
+
+    handle_out = pcap_open_live(dest_dev, BUFSIZE, promisc, timeout_ms, errbuf);
+    if(handle_in == NULL) {
+		fprintf(stderr, "pcap_open_live error\n");
+		return 2;
+    }
+    else {
+		printf("dest_dev open\n");
+    }
+
+/*
     if( ( f_in = fopen( argv[optind], "rb" ) ) == NULL )
     {
         perror( "fopen failed\n" );
@@ -578,8 +632,9 @@ usage:
     {
         opt.store_bad=1;
     }
-
+*/
     /* Support manually-configured output files*/
+/*
     if ( opt.decrypted_fpath[0])
         f_out = fopen( opt.decrypted_fpath, "wb+");
     else
@@ -606,7 +661,9 @@ usage:
             return( 1 );
         }
     }
-
+*/
+    /* for pcap file header */
+/*
     pfh.magic           = TCPDUMP_MAGIC;
     pfh.version_major   = PCAP_VERSION_MAJOR;
     pfh.version_minor   = PCAP_VERSION_MINOR;
@@ -633,7 +690,7 @@ usage:
             return( 1 );
         }
     }
-
+*/
     /* loop reading and deciphering the packets */
 
     memset( &stats, 0, sizeof( stats ) );
@@ -652,7 +709,12 @@ usage:
         }
 
         /* read one packet */
+	const u_char *packet;
+	packet = pcap_next(handle_in, &pkh);
+	n = pkh.caplen;
+	memcpy(buffer, packet, n); 
 
+	/*
         n = sizeof( pkh );
 
         if( fread( &pkh, 1, n, f_in ) != (size_t) n )
@@ -673,6 +735,7 @@ usage:
 
         if( fread( buffer, 1, n, f_in ) != (size_t) n )
             break;
+	*/
 
         stats.nb_read++;
 
@@ -860,8 +923,9 @@ usage:
                     {
                         stats.nb_bad++;
                         memcpy(h80211, buffer2, pkh.caplen);
-                        if( write_packet( f_bad, &pkh, h80211 ) != 0 )
-                            break;
+			printf("opt.store_bad == 1\n");
+                        //if( write_packet( f_bad, &pkh, h80211 ) != 0 )
+                        //    break;
                     }
                     continue;
                 }
@@ -878,7 +942,7 @@ usage:
 
                 h80211[1] &= 0xBF;
 
-                if( write_packet( f_out, &pkh, h80211 ) != 0 )
+                if( write_packet( handle_out, &pkh, h80211 ) != 0 )
                     break;
             }
             else
@@ -922,7 +986,7 @@ usage:
 
                 h80211[1] &= 0xBF;
 
-                if( write_packet( f_out, &pkh, h80211 ) != 0 )
+                if( write_packet( handle_out, &pkh, h80211 ) != 0 )
                     break;
             }
         }
@@ -939,7 +1003,7 @@ usage:
                 if( opt.crypt != CRYPT_NONE )
                     continue;
 
-                if( write_packet( f_out, &pkh, h80211 ) != 0 )
+                if( write_packet( handle_out, &pkh, h80211 ) != 0 )
                     break;
 				else
 					continue;
@@ -1050,6 +1114,8 @@ usage:
 
     fclose( f_in  );
     fclose( f_out );
+    pcap_close(handle_in);
+    pcap_close(handle_out);
     if(opt.store_bad)
         fclose( f_bad );
 
